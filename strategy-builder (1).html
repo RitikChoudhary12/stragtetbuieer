@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Strike Ledger — Live Strategy Builder</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Sora:wght@400;500;600;700&display=swap');
+
+  :root{
+    --bg: #0b0f14;
+    --panel: #12181f;
+    --panel-2: #161d26;
+    --line: #232b35;
+    --text: #e7edf3;
+    --dim: #8a97a6;
+    --green: #3ddc84;
+    --red: #ff5d5d;
+    --amber: #f2b544;
+    --cyan: #4fc3d9;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:'Sora',sans-serif;
+    padding:20px;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  h1{
+    font-family:'Sora',sans-serif; font-size:22px; font-weight:700;
+    margin:0 0 2px 0; letter-spacing:.2px;
+  }
+  .subtitle{color:var(--dim); font-size:13px; margin-bottom:18px;}
+  .topbar{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; margin-bottom:14px;
+  }
+  select, input{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+    border-radius:7px; padding:7px 9px; font-family:'IBM Plex Mono',monospace; font-size:13px;
+  }
+  label.field{display:flex; flex-direction:column; gap:4px; font-size:11px; color:var(--dim);}
+  button{
+    cursor:pointer; border:none; border-radius:7px; padding:8px 14px;
+    font-family:'Sora',sans-serif; font-weight:600; font-size:13px;
+  }
+  .btn-buy{background:rgba(61,220,132,.15); color:var(--green); border:1px solid rgba(61,220,132,.4);}
+  .btn-sell{background:rgba(255,93,93,.15); color:var(--red); border:1px solid rgba(255,93,93,.4);}
+  .btn-refresh{background:var(--panel-2); color:var(--text); border:1px solid var(--line);}
+  .btn-refresh:hover{border-color:var(--cyan);}
+  .status{font-size:12px; color:var(--dim); margin-left:auto;}
+  .status.live{color:var(--green);}
+  .status.err{color:var(--red);}
+
+  .layout{display:grid; grid-template-columns: 1.15fr .85fr; gap:14px;}
+  @media (max-width:980px){.layout{grid-template-columns:1fr;}}
+
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:14px; margin-bottom:14px;
+  }
+  .card h2{font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 10px 0; font-weight:600;}
+
+  table{width:100%; border-collapse:collapse; font-family:'IBM Plex Mono',monospace; font-size:12.5px;}
+  th{text-align:right; color:var(--dim); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--line); font-size:11px;}
+  th:first-child, td:first-child{text-align:left;}
+  td{text-align:right; padding:6px 8px; border-bottom:1px solid rgba(35,43,53,.6);}
+  tr:hover td{background:rgba(255,255,255,.02);}
+  .strike-cell{font-weight:600;}
+  .atm-row td{background:rgba(242,181,68,.06);}
+  .leg-actions{display:flex; gap:4px; justify-content:flex-end;}
+  .leg-actions button{padding:3px 8px; font-size:11px;}
+
+  .basket-row{
+    border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px;
+    background:var(--panel-2);
+  }
+  .basket-row .row-top{display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;}
+  .badge{padding:2px 8px; border-radius:5px; font-size:11px; font-weight:600; font-family:'IBM Plex Mono',monospace;}
+  .badge.buy{background:rgba(61,220,132,.15); color:var(--green);}
+  .badge.sell{background:rgba(255,93,93,.15); color:var(--red);}
+  .remove-x{background:none; color:var(--dim); font-size:14px; padding:2px 6px;}
+  .remove-x:hover{color:var(--red);}
+  .basket-fields{display:grid; grid-template-columns:repeat(4,1fr); gap:8px;}
+  .basket-fields label{font-size:10px; color:var(--dim); display:block; margin-bottom:3px;}
+  .basket-fields input{width:100%;}
+  .trigger-note{font-size:11px; margin-top:6px; font-family:'IBM Plex Mono',monospace;}
+  .trigger-note.hit{color:var(--red); font-weight:600;}
+  .trigger-note.ok{color:var(--dim);}
+
+  .summary-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .stat{background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px;}
+  .stat .k{font-size:11px; color:var(--dim); margin-bottom:4px;}
+  .stat .v{font-family:'IBM Plex Mono',monospace; font-size:17px; font-weight:600;}
+  .v.pos{color:var(--green);} .v.neg{color:var(--red);}
+
+  #payoffCanvas{width:100%; height:220px; display:block;}
+  .empty{color:var(--dim); font-size:13px; text-align:center; padding:20px 0;}
+</style>
+</head>
+<body>
+
+<h1>Strike Ledger</h1>
+<div class="subtitle">Live Delta Exchange options chain — build a basket, set your own SL/TP in premium points, watch it trigger.</div>
+
+<div class="topbar">
+  <label class="field">Underlying
+    <select id="underlyingSel">
+      <option value="BTC">BTC</option>
+      <option value="ETH">ETH</option>
+    </select>
+  </label>
+  <label class="field">Expiry
+    <select id="expirySel"><option>loading…</option></select>
+  </label>
+  <button class="btn-refresh" id="refreshBtn">↻ Refresh now</button>
+  <div class="status mono" id="statusEl">connecting…</div>
+</div>
+
+<div class="layout">
+  <div>
+    <div class="card">
+      <h2>Option Chain — Spot: <span id="spotVal" class="mono">—</span></h2>
+      <div style="max-height:480px; overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Strike</th>
+              <th>CE Mark</th>
+              <th></th>
+              <th>PE Mark</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="chainBody">
+            <tr><td colspan="5" class="empty">Loading chain…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Basket</h2>
+      <div id="basketBody"><div class="empty">Add legs from the chain on the left.</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Position Summary</h2>
+      <div class="summary-grid" id="summaryGrid">
+        <div class="stat"><div class="k">Net premium (live)</div><div class="v mono" id="netPrem">—</div></div>
+        <div class="stat"><div class="k">Net P&amp;L (live)</div><div class="v mono" id="netPnl">—</div></div>
+        <div class="stat"><div class="k">Max loss (to expiry)</div><div class="v mono" id="maxLoss">—</div></div>
+        <div class="stat"><div class="k">Max profit (to expiry)</div><div class="v mono" id="maxProfit">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Payoff at Expiry</h2>
+      <canvas id="payoffCanvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'https://api.india.delta.exchange/v2/tickers';
+let chainData = [];       // raw tickers for chosen underlying (all expiries)
+let expiries = [];        // list of expiry keys "DDMMYY"
+let currentExpiry = null;
+let spot = null;
+let basket = [];          // {id, side, type, strike, symbol, lots, entryPremium, currentPremium, slPts, tpPts}
+let legIdSeq = 1;
+
+const $ = (id) => document.getElementById(id);
+
+function fmtMoney(n){
+  if(n===null||n===undefined||isNaN(n)) return '—';
+  const s = n<0 ? '-' : '';
+  return s + '$' + Math.abs(n).toLocaleString(undefined,{maximumFractionDigits:2});
+}
+
+function parseExpiryFromSymbol(sym){
+  // e.g. C-BTC-66800-280726  -> DDMMYY = 280726
+  const parts = sym.split('-');
+  return parts[parts.length-1];
+}
+function expiryLabel(ddmmyy){
+  if(!ddmmyy || ddmmyy.length!==6) return ddmmyy;
+  const dd=ddmmyy.slice(0,2), mm=ddmmyy.slice(2,4), yy=ddmmyy.slice(4,6);
+  return `${dd}-${mm}-20${yy}`;
+}
+function expiryToQueryDate(ddmmyy){
+  const dd=ddmmyy.slice(0,2), mm=ddmmyy.slice(2,4), yy=ddmmyy.slice(4,6);
+  return `${dd}-${mm}-20${yy}`;
+}
+
+function extractPremium(t){
+  const tryFields = ['mark_price','close_price'];
+  for(const f of tryFields){
+    if(t[f] !== undefined && t[f] !== null && !isNaN(parseFloat(t[f]))) return parseFloat(t[f]);
+  }
+  if(t.quotes){
+    const bid = parseFloat(t.quotes.best_bid), ask = parseFloat(t.quotes.best_ask);
+    if(!isNaN(bid) && !isNaN(ask)) return (bid+ask)/2;
+    if(!isNaN(bid)) return bid;
+    if(!isNaN(ask)) return ask;
+  }
+  return null;
+}
+function extractSpot(t){
+  const f = t.spot_price;
+  if(f !== undefined && f !== null && !isNaN(parseFloat(f))) return parseFloat(f);
+  return null;
+}
+
+async function fetchChain(underlying){
+  setStatus('fetching chain…', '');
+  const qs = `contract_types=call_options,put_options&underlying_asset_symbols=${underlying}`;
+  // 1) try Delta's API directly (works once this file is hosted on a real domain Delta allows,
+  //    or if Delta ever permits this origin)
+  try{
+    const res = await fetch(`${API}?${qs}`, {headers:{Accept:'application/json'}});
+    if(res.ok){
+      const json = await res.json();
+      if(json.success) return json.result || [];
+    }
+  }catch(e){ /* fall through to proxy */ }
+
+  // 2) fall back to a same-origin serverless proxy at /.netlify/functions/delta-proxy
+  //    (only exists once you deploy this file alongside the function below on Netlify)
+  const res2 = await fetch(`/.netlify/functions/delta-proxy?${qs}`, {headers:{Accept:'application/json'}});
+  if(!res2.ok) throw new Error('Direct call blocked by CORS, and no proxy found at /.netlify/functions/delta-proxy');
+  const json2 = await res2.json();
+  if(!json2.success) throw new Error('Proxy returned success:false');
+  return json2.result || [];
+}
+
+function rebuildExpiryList(){
+  const set = new Set();
+  chainData.forEach(t=>{ if(t.symbol) set.add(parseExpiryFromSymbol(t.symbol)); });
+  expiries = Array.from(set).sort((a,b)=>{
+    // sort by actual date
+    const da = new Date('20'+a.slice(4,6),parseInt(a.slice(2,4))-1,a.slice(0,2));
+    const db = new Date('20'+b.slice(4,6),parseInt(b.slice(2,4))-1,b.slice(0,2));
+    return da-db;
+  });
+  const sel = $('expirySel');
+  sel.innerHTML = expiries.map(e=>`<option value="${e}">${expiryLabel(e)}</option>`).join('');
+  if(!currentExpiry || !expiries.includes(currentExpiry)) currentExpiry = expiries[0];
+  sel.value = currentExpiry;
+}
+
+function renderChain(){
+  const rows = chainData.filter(t => parseExpiryFromSymbol(t.symbol) === currentExpiry);
+  const byStrike = {};
+  rows.forEach(t=>{
+    const strike = parseFloat(t.strike_price);
+    if(!byStrike[strike]) byStrike[strike] = {};
+    if(t.contract_type === 'call_options') byStrike[strike].ce = t;
+    if(t.contract_type === 'put_options') byStrike[strike].pe = t;
+    const s = extractSpot(t);
+    if(s) spot = s;
+  });
+  $('spotVal').textContent = spot ? spot.toLocaleString() : '—';
+
+  const strikes = Object.keys(byStrike).map(parseFloat).sort((a,b)=>a-b);
+  if(strikes.length===0){
+    $('chainBody').innerHTML = '<tr><td colspan="5" class="empty">No strikes for this expiry.</td></tr>';
+    return;
+  }
+  let html = '';
+  strikes.forEach(strike=>{
+    const cePrem = byStrike[strike].ce ? extractPremium(byStrike[strike].ce) : null;
+    const peProm = byStrike[strike].pe ? extractPremium(byStrike[strike].pe) : null;
+    const isAtm = spot && Math.abs(strike-spot) === Math.min(...strikes.map(s=>Math.abs(s-spot)));
+    html += `<tr class="${isAtm?'atm-row':''}">
+      <td class="strike-cell">${strike.toLocaleString()}</td>
+      <td>${cePrem!==null? '$'+cePrem.toFixed(2):'—'}</td>
+      <td>
+        <div class="leg-actions">
+          <button class="btn-buy" onclick="addLeg('buy','call',${strike})">Buy</button>
+          <button class="btn-sell" onclick="addLeg('sell','call',${strike})">Sell</button>
+        </div>
+      </td>
+      <td>${peProm!==null? '$'+peProm.toFixed(2):'—'}</td>
+      <td>
+        <div class="leg-actions">
+          <button class="btn-buy" onclick="addLeg('buy','put',${strike})">Buy</button>
+          <button class="btn-sell" onclick="addLeg('sell','put',${strike})">Sell</button>
+        </div>
+      </td>
+    </tr>`;
+  });
+  $('chainBody').innerHTML = html;
+}
+
+function findTicker(type, strike){
+  return chainData.find(t=>
+    parseExpiryFromSymbol(t.symbol)===currentExpiry &&
+    t.contract_type === (type==='call'?'call_options':'put_options') &&
+    parseFloat(t.strike_price)===strike
+  );
+}
+
+function addLeg(side, type, strike){
+  const t = findTicker(type, strike);
+  const prem = t ? extractPremium(t) : null;
+  basket.push({
+    id: legIdSeq++,
+    side, type, strike,
+    lots: 1,
+    entryPremium: prem,
+    currentPremium: prem,
+    slPts: null,
+    tpPts: null
+  });
+  renderBasket();
+}
+
+function removeLeg(id){
+  basket = basket.filter(l=>l.id!==id);
+  renderBasket();
+}
+
+function updateLegField(id, field, value){
+  const leg = basket.find(l=>l.id===id);
+  if(!leg) return;
+  leg[field] = value === '' ? null : parseFloat(value);
+  renderBasket();
+}
+
+function refreshLegPremiums(){
+  basket.forEach(leg=>{
+    const t = findTicker(leg.type, leg.strike);
+    if(t){
+      const p = extractPremium(t);
+      if(p!==null) leg.currentPremium = p;
+    }
+  });
+}
+
+function legTriggerStatus(leg){
+  if(leg.currentPremium===null || leg.entryPremium===null) return {sl:false, tp:false};
+  const move = leg.side==='sell' ? (leg.currentPremium-leg.entryPremium) : (leg.entryPremium-leg.currentPremium);
+  // move>0 for sell means premium rose (loss); for buy means premium fell (loss)
+  const slHit = leg.slPts!==null && move >= leg.slPts;
+  const gain = -move; // opposite of loss-direction move
+  const tpHit = leg.tpPts!==null && gain >= leg.tpPts;
+  return {sl:slHit, tp:tpHit, move};
+}
+
+function renderBasket(){
+  const el = $('basketBody');
+  if(basket.length===0){
+    el.innerHTML = '<div class="empty">Add legs from the chain on the left.</div>';
+    updateSummary();
+    drawPayoff();
+    return;
+  }
+  refreshLegPremiums();
+  let html='';
+  basket.forEach(leg=>{
+    const trig = legTriggerStatus(leg);
+    const pnlPerLot = leg.side==='sell' ? (leg.entryPremium-leg.currentPremium) : (leg.currentPremium-leg.entryPremium);
+    html += `<div class="basket-row">
+      <div class="row-top">
+        <div>
+          <span class="badge ${leg.side}">${leg.side.toUpperCase()}</span>
+          <span class="mono" style="margin-left:6px; font-weight:600;">${leg.type==='call'?'CE':'PE'} ${leg.strike}</span>
+        </div>
+        <button class="remove-x" onclick="removeLeg(${leg.id})">✕</button>
+      </div>
+      <div class="basket-fields">
+        <div><label>Lots</label><input type="number" min="1" value="${leg.lots}" onchange="updateLegField(${leg.id},'lots',this.value)"></div>
+        <div><label>Entry premium</label><input type="number" step="0.01" value="${leg.entryPremium??''}" onchange="updateLegField(${leg.id},'entryPremium',this.value)"></div>
+        <div><label>SL (premium pts)</label><input type="number" step="0.01" placeholder="off" value="${leg.slPts??''}" onchange="updateLegField(${leg.id},'slPts',this.value)"></div>
+        <div><label>TP (premium pts)</label><input type="number" step="0.01" placeholder="off" value="${leg.tpPts??''}" onchange="updateLegField(${leg.id},'tpPts',this.value)"></div>
+      </div>
+      <div class="trigger-note ${trig.sl||trig.tp ? 'hit':'ok'}">
+        Live premium: $${leg.currentPremium!==null?leg.currentPremium.toFixed(2):'—'} ·
+        P&amp;L/lot: ${fmtMoney(pnlPerLot)} ·
+        ${trig.sl ? 'SL TRIGGERED' : trig.tp ? 'TP TRIGGERED' : 'within range'}
+      </div>
+    </div>`;
+  });
+  el.innerHTML = html;
+  updateSummary();
+  drawPayoff();
+}
+
+function updateSummary(){
+  if(basket.length===0){
+    ['netPrem','netPnl','maxLoss','maxProfit'].forEach(id=>{$(id).textContent='—'; $(id).className='v mono';});
+    return;
+  }
+  let netPnl = 0, netEntry=0, netCurrent=0;
+  basket.forEach(leg=>{
+    const sign = leg.side==='sell' ? -1 : 1; // sell = received credit (short), buy = paid debit (long)
+    const pnlPerLot = leg.side==='sell' ? (leg.entryPremium-leg.currentPremium) : (leg.currentPremium-leg.entryPremium);
+    netPnl += pnlPerLot * leg.lots;
+    netEntry += sign * leg.entryPremium * leg.lots;
+    netCurrent += sign * leg.currentPremium * leg.lots;
+  });
+  $('netPrem').textContent = fmtMoney(netCurrent);
+  $('netPnl').textContent = fmtMoney(netPnl);
+  $('netPnl').className = 'v mono ' + (netPnl>=0?'pos':'neg');
+
+  // max loss / max profit at expiry via payoff scan
+  const {maxLoss, maxProfit} = scanPayoffExtremes();
+  $('maxLoss').textContent = fmtMoney(-Math.abs(maxLoss));
+  $('maxLoss').className = 'v mono neg';
+  $('maxProfit').textContent = fmtMoney(maxProfit);
+  $('maxProfit').className = 'v mono pos';
+}
+
+function payoffAt(s){
+  // net P&L at expiry if underlying settles at price s
+  let total = 0;
+  basket.forEach(leg=>{
+    const intrinsic = leg.type==='call' ? Math.max(0, s-leg.strike) : Math.max(0, leg.strike-s);
+    const perLot = leg.side==='buy' ? (intrinsic - leg.entryPremium) : (leg.entryPremium - intrinsic);
+    total += perLot * leg.lots;
+  });
+  return total;
+}
+
+function scanPayoffExtremes(){
+  if(basket.length===0 || !spot) return {maxLoss:0, maxProfit:0};
+  const strikes = basket.map(l=>l.strike);
+  const lo = Math.min(spot*0.7, ...strikes)*0.9;
+  const hi = Math.max(spot*1.3, ...strikes)*1.1;
+  let minV=Infinity, maxV=-Infinity;
+  const steps=200;
+  for(let i=0;i<=steps;i++){
+    const s = lo + (hi-lo)*i/steps;
+    const v = payoffAt(s);
+    if(v<minV) minV=v;
+    if(v>maxV) maxV=v;
+  }
+  return {maxLoss:minV, maxProfit:maxV};
+}
+
+function drawPayoff(){
+  const canvas = $('payoffCanvas');
+  const dpr = window.devicePixelRatio||1;
+  const w = canvas.clientWidth, h = canvas.clientHeight || 220;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+
+  if(basket.length===0 || !spot){
+    ctx.fillStyle = '#8a97a6'; ctx.font='13px Sora'; ctx.textAlign='center';
+    ctx.fillText('Add legs to see the payoff curve', w/2, h/2);
+    return;
+  }
+  const strikes = basket.map(l=>l.strike);
+  const lo = Math.min(spot*0.85, ...strikes)*0.95;
+  const hi = Math.max(spot*1.15, ...strikes)*1.05;
+  const steps=160;
+  const pts = [];
+  let minV=Infinity, maxV=-Infinity;
+  for(let i=0;i<=steps;i++){
+    const s = lo + (hi-lo)*i/steps;
+    const v = payoffAt(s);
+    pts.push([s,v]);
+    if(v<minV) minV=v; if(v>maxV) maxV=v;
+  }
+  const pad = Math.max(Math.abs(minV),Math.abs(maxV))*0.15 || 10;
+  minV-=pad; maxV+=pad;
+  const padL=50, padB=24, padT=10, padR=10;
+  const X = s => padL + (s-lo)/(hi-lo)*(w-padL-padR);
+  const Y = v => padT + (1-(v-minV)/(maxV-minV))*(h-padT-padB);
+
+  // zero line
+  ctx.strokeStyle = '#232b35'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(padL, Y(0)); ctx.lineTo(w-padR, Y(0)); ctx.stroke();
+  ctx.fillStyle='#8a97a6'; ctx.font='10px IBM Plex Mono'; ctx.textAlign='right';
+  ctx.fillText('0', padL-6, Y(0)+3);
+
+  // spot marker
+  ctx.strokeStyle = '#4fc3d9'; ctx.setLineDash([4,3]);
+  ctx.beginPath(); ctx.moveTo(X(spot), padT); ctx.lineTo(X(spot), h-padB); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='#4fc3d9'; ctx.textAlign='center'; ctx.fillText('spot', X(spot), padT-2>0?10:10);
+
+  // curve
+  ctx.beginPath();
+  pts.forEach(([s,v],i)=>{ i===0?ctx.moveTo(X(s),Y(v)):ctx.lineTo(X(s),Y(v)); });
+  ctx.strokeStyle = '#3ddc84'; ctx.lineWidth=2; ctx.stroke();
+
+  // fill under/over zero
+  ctx.save();
+  ctx.beginPath();
+  pts.forEach(([s,v],i)=>{ i===0?ctx.moveTo(X(s),Y(v)):ctx.lineTo(X(s),Y(v)); });
+  ctx.lineTo(X(pts[pts.length-1][0]), Y(0));
+  ctx.lineTo(X(pts[0][0]), Y(0));
+  ctx.closePath();
+  ctx.fillStyle='rgba(61,220,132,.08)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function setStatus(msg, cls){
+  const el = $('statusEl');
+  el.textContent = msg;
+  el.className = 'status mono ' + cls;
+}
+
+async function loadChain(){
+  try{
+    const underlying = $('underlyingSel').value;
+    chainData = await fetchChain(underlying);
+    rebuildExpiryList();
+    renderChain();
+    renderBasket();
+    setStatus('live · updated '+new Date().toLocaleTimeString(), 'live');
+  }catch(e){
+    setStatus('fetch failed: '+e.message+' (Delta API may be blocking browser CORS — see note below)', 'err');
+    $('chainBody').innerHTML = '<tr><td colspan="5" class="empty">Could not load live chain. If this persists, Delta\\'s API is likely rejecting direct browser requests (CORS) — it would need a small serverless proxy (e.g. a Netlify function) to relay the request.</td></tr>';
+  }
+}
+
+$('underlyingSel').addEventListener('change', ()=>{ currentExpiry=null; basket=[]; loadChain(); });
+$('expirySel').addEventListener('change', (e)=>{ currentExpiry = e.target.value; renderChain(); renderBasket(); });
+$('refreshBtn').addEventListener('click', loadChain);
+
+loadChain();
+setInterval(loadChain, 8000);
+</script>
+</body>
+</html>
