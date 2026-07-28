@@ -455,16 +455,24 @@ function legEffectiveExtremes(leg, lo, hi){
   return {minV, maxV};
 }
 
+// For a given leg, what does it do when the underlying moves UP vs DOWN —
+// a long call / short put gain on the way up; a short call / long put gain
+// on the way down. Returns that leg's SL/TP-capped value for that regime.
+function legDirectionalValue(leg, direction, lo, hi){
+  const {minV, maxV} = legEffectiveExtremes(leg, lo, hi);
+  const gainsOnUp =
+    (leg.type==='call' && leg.side==='buy') ||
+    (leg.type==='put'  && leg.side==='sell');
+  const isGainDirection = (direction==='up') === gainsOnUp;
+  return isGainDirection ? maxV : minV;
+}
+
 function scanPayoffExtremes(){
   if(basket.length===0 || !spot) return {maxLoss:0, maxProfit:0};
   const [lo,hi] = scanRange();
-  let totalMin=0, totalMax=0;
-  basket.forEach(leg=>{
-    const {minV,maxV} = legEffectiveExtremes(leg, lo, hi);
-    totalMin += minV;
-    totalMax += maxV;
-  });
-  return {maxLoss:totalMin, maxProfit:totalMax};
+  const upNet = basket.reduce((sum,leg)=> sum + legDirectionalValue(leg,'up',lo,hi), 0);
+  const downNet = basket.reduce((sum,leg)=> sum + legDirectionalValue(leg,'down',lo,hi), 0);
+  return {maxLoss: Math.min(upNet, downNet), maxProfit: Math.max(upNet, downNet)};
 }
 
 function drawPayoff(){
