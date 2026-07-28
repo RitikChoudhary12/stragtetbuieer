@@ -209,6 +209,20 @@ function extractPremium(t){
   }
   return null;
 }
+function extractBid(t){
+  if(t.quotes && t.quotes.best_bid!==undefined && t.quotes.best_bid!==null){
+    const v = parseFloat(t.quotes.best_bid);
+    if(!isNaN(v)) return v;
+  }
+  return extractPremium(t); // fallback to mark if no live bid
+}
+function extractAsk(t){
+  if(t.quotes && t.quotes.best_ask!==undefined && t.quotes.best_ask!==null){
+    const v = parseFloat(t.quotes.best_ask);
+    if(!isNaN(v)) return v;
+  }
+  return extractPremium(t); // fallback to mark if no live ask
+}
 function extractSpot(t){
   const f = t.spot_price;
   if(f !== undefined && f !== null && !isNaN(parseFloat(f))) return parseFloat(f);
@@ -315,7 +329,7 @@ function findTicker(type, strike){
 
 function addLeg(side, type, strike){
   const t = findTicker(type, strike);
-  const prem = t ? extractPremium(t) : null;
+  const prem = t ? (side==='buy' ? extractAsk(t) : extractBid(t)) : null;
   basket.push({
     id: legIdSeq++,
     side, type, strike,
@@ -344,8 +358,9 @@ function refreshLegPremiums(){
   basket.forEach(leg=>{
     const t = findTicker(leg.type, leg.strike);
     if(t){
-      const p = extractPremium(t);
-      if(p!==null) leg.currentPremium = p;
+      // to exit: a long (buy) position sells at bid; a short (sell) position buys back at ask
+      const p = leg.side==='buy' ? extractBid(t) : extractAsk(t);
+      if(p!==null && p!==undefined && !isNaN(p)) leg.currentPremium = p;
     }
   });
 }
