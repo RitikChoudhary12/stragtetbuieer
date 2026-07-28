@@ -148,6 +148,7 @@
 
     <div class="card">
       <h2>Position Summary</h2>
+      <div style="font-size:11px; color:var(--dim); margin:-4px 0 10px 0;">Max loss/profit reflect each leg's SL/TP cap where set — otherwise it's the uncapped expiry-scenario extreme.</div>
       <div class="summary-grid" id="summaryGrid">
         <div class="stat"><div class="k">Net premium (live)</div><div class="v mono" id="netPrem">—</div></div>
         <div class="stat"><div class="k">Net P&amp;L (live)</div><div class="v mono" id="netPnl">—</div></div>
@@ -406,9 +407,9 @@ function updateSummary(){
   $('netPnl').textContent = fmtMoney(netPnl);
   $('netPnl').className = 'v mono ' + (netPnl>=0?'pos':'neg');
 
-  // max loss / max profit at expiry via payoff scan
+  // max loss / max profit at expiry, capped by any SL/TP set per leg
   const {maxLoss, maxProfit} = scanPayoffExtremes();
-  $('maxLoss').textContent = fmtMoney(-Math.abs(maxLoss));
+  $('maxLoss').textContent = fmtMoney(maxLoss);
   $('maxLoss').className = 'v mono neg';
   $('maxProfit').textContent = fmtMoney(maxProfit);
   $('maxProfit').className = 'v mono pos';
@@ -425,20 +426,45 @@ function payoffAt(s){
   return total;
 }
 
-function scanPayoffExtremes(){
-  if(basket.length===0 || !spot) return {maxLoss:0, maxProfit:0};
+function legPnlAt(leg, s){
+  const intrinsic = leg.type==='call' ? Math.max(0, s-leg.strike) : Math.max(0, leg.strike-s);
+  const perLot = leg.side==='buy' ? (intrinsic - leg.entryPremium) : (leg.entryPremium - intrinsic);
+  return perLot * leg.lots;
+}
+
+function scanRange(){
   const strikes = basket.map(l=>l.strike);
   const lo = Math.min(spot*0.7, ...strikes)*0.9;
   const hi = Math.max(spot*1.3, ...strikes)*1.1;
+  return [lo, hi];
+}
+
+// Per-leg best/worst P&L across a wide spot scan, then capped by that leg's
+// own SL (floors the loss) and TP (ceilings the profit) if the user set them.
+function legEffectiveExtremes(leg, lo, hi){
   let minV=Infinity, maxV=-Infinity;
   const steps=200;
   for(let i=0;i<=steps;i++){
     const s = lo + (hi-lo)*i/steps;
-    const v = payoffAt(s);
+    const v = legPnlAt(leg, s);
     if(v<minV) minV=v;
     if(v>maxV) maxV=v;
   }
-  return {maxLoss:minV, maxProfit:maxV};
+  if(leg.slPts!==null) minV = Math.max(minV, -leg.slPts*leg.lots);
+  if(leg.tpPts!==null) maxV = Math.min(maxV, leg.tpPts*leg.lots);
+  return {minV, maxV};
+}
+
+function scanPayoffExtremes(){
+  if(basket.length===0 || !spot) return {maxLoss:0, maxProfit:0};
+  const [lo,hi] = scanRange();
+  let totalMin=0, totalMax=0;
+  basket.forEach(leg=>{
+    const {minV,maxV} = legEffectiveExtremes(leg, lo, hi);
+    totalMin += minV;
+    totalMax += maxV;
+  });
+  return {maxLoss:totalMin, maxProfit:totalMax};
 }
 
 function drawPayoff(){
