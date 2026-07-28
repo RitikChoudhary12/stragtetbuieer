@@ -518,7 +518,7 @@ async function loadChain(){
     setStatus('live · updated '+new Date().toLocaleTimeString(), 'live');
   }catch(e){
     setStatus('fetch failed: '+e.message+' (Delta API may be blocking browser CORS — see note below)', 'err');
-    $('chainBody').innerHTML = '<tr><td colspan="5" class="empty">Could not load live chain. If this persists, Delta\\'s API is likely rejecting direct browser requests (CORS) — it would need a small serverless proxy (e.g. a Netlify function) to relay the request.</td></tr>';
+    $('chainBody').innerHTML = '<tr><td colspan="5" class="empty">Could not load live chain. If this persists, Delta\'s API is likely rejecting direct browser requests (CORS) — it would need a small serverless proxy (e.g. a Netlify function) to relay the request.</td></tr>';
   }
 }
 
