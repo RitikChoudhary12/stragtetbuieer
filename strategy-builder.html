@@ -170,7 +170,7 @@ let chainData = [];       // raw tickers for chosen underlying (all expiries)
 let expiries = [];        // list of expiry keys "DDMMYY"
 let currentExpiry = null;
 let spot = null;
-let basket = [];          // {id, side, type, strike, symbol, lots, entryPremium, currentPremium, slPts, tpPts}
+let basket = [];          // {id, side, type, strike, symbol, lots, entryPremium, currentPremium, slPrice, tpPrice}
 let legIdSeq = 1;
 
 const $ = (id) => document.getElementById(id);
@@ -296,6 +296,15 @@ function renderChain(){
   $('chainBody').innerHTML = html;
 }
 
+function slPtsOf(leg){
+  if(leg.slPrice===null || leg.slPrice===undefined || leg.entryPremium===null) return null;
+  return Math.abs(leg.entryPremium - leg.slPrice);
+}
+function tpPtsOf(leg){
+  if(leg.tpPrice===null || leg.tpPrice===undefined || leg.entryPremium===null) return null;
+  return Math.abs(leg.tpPrice - leg.entryPremium);
+}
+
 function findTicker(type, strike){
   return chainData.find(t=>
     parseExpiryFromSymbol(t.symbol)===currentExpiry &&
@@ -313,8 +322,8 @@ function addLeg(side, type, strike){
     lots: 1,
     entryPremium: prem,
     currentPremium: prem,
-    slPts: null,
-    tpPts: null
+    slPrice: null,
+    tpPrice: null
   });
   renderBasket();
 }
@@ -343,11 +352,12 @@ function refreshLegPremiums(){
 
 function legTriggerStatus(leg){
   if(leg.currentPremium===null || leg.entryPremium===null) return {sl:false, tp:false};
+  const slPts = slPtsOf(leg), tpPts = tpPtsOf(leg);
   const move = leg.side==='sell' ? (leg.currentPremium-leg.entryPremium) : (leg.entryPremium-leg.currentPremium);
   // move>0 for sell means premium rose (loss); for buy means premium fell (loss)
-  const slHit = leg.slPts!==null && move >= leg.slPts;
+  const slHit = slPts!==null && move >= slPts;
   const gain = -move; // opposite of loss-direction move
-  const tpHit = leg.tpPts!==null && gain >= leg.tpPts;
+  const tpHit = tpPts!==null && gain >= tpPts;
   return {sl:slHit, tp:tpHit, move};
 }
 
@@ -375,8 +385,8 @@ function renderBasket(){
       <div class="basket-fields">
         <div><label>Lots</label><input type="number" min="1" value="${leg.lots}" onchange="updateLegField(${leg.id},'lots',this.value)"></div>
         <div><label>Entry premium</label><input type="number" step="0.01" value="${leg.entryPremium??''}" onchange="updateLegField(${leg.id},'entryPremium',this.value)"></div>
-        <div><label>SL (premium pts)</label><input type="number" step="0.01" placeholder="off" value="${leg.slPts??''}" onchange="updateLegField(${leg.id},'slPts',this.value)"></div>
-        <div><label>TP (premium pts)</label><input type="number" step="0.01" placeholder="off" value="${leg.tpPts??''}" onchange="updateLegField(${leg.id},'tpPts',this.value)"></div>
+        <div><label>SL exit price</label><input type="number" step="0.01" placeholder="off" value="${leg.slPrice??''}" onchange="updateLegField(${leg.id},'slPrice',this.value)"></div>
+        <div><label>TP exit price</label><input type="number" step="0.01" placeholder="off" value="${leg.tpPrice??''}" onchange="updateLegField(${leg.id},'tpPrice',this.value)"></div>
       </div>
       <div class="trigger-note ${trig.sl||trig.tp ? 'hit':'ok'}">
         Live premium: $${leg.currentPremium!==null?leg.currentPremium.toFixed(2):'—'} ·
@@ -450,8 +460,8 @@ function legEffectiveExtremes(leg, lo, hi){
     if(v<minV) minV=v;
     if(v>maxV) maxV=v;
   }
-  if(leg.slPts!==null) minV = Math.max(minV, -leg.slPts*leg.lots);
-  if(leg.tpPts!==null) maxV = Math.min(maxV, leg.tpPts*leg.lots);
+  if(slPtsOf(leg)!==null) minV = Math.max(minV, -slPtsOf(leg)*leg.lots);
+  if(tpPtsOf(leg)!==null) maxV = Math.min(maxV, tpPtsOf(leg)*leg.lots);
   return {minV, maxV};
 }
 
