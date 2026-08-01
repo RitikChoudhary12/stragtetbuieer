@@ -87,6 +87,15 @@
   .trigger-note{font-size:11px; margin-top:6px; font-family:'IBM Plex Mono',monospace;}
   .trigger-note.hit{color:var(--red); font-weight:600;}
   .trigger-note.ok{color:var(--dim);}
+  .link-suggestion{
+    font-size:11px; margin-top:6px; font-family:'IBM Plex Mono',monospace;
+    color:var(--cyan); background:rgba(79,195,217,.08); border:1px solid rgba(79,195,217,.25);
+    border-radius:6px; padding:6px 8px; display:flex; align-items:center; justify-content:space-between; gap:8px;
+  }
+  .link-suggestion button{
+    background:rgba(79,195,217,.15); color:var(--cyan); border:1px solid rgba(79,195,217,.4);
+    padding:3px 10px; font-size:11px; font-family:'Sora',sans-serif; font-weight:600; flex-shrink:0;
+  }
 
   .summary-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
   .stat{background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px;}
@@ -125,15 +134,17 @@
         <table>
           <thead>
             <tr>
+              <th>CE OI</th>
               <th>Strike</th>
               <th>CE Mark</th>
               <th></th>
               <th>PE Mark</th>
               <th></th>
+              <th>PE OI</th>
             </tr>
           </thead>
           <tbody id="chainBody">
-            <tr><td colspan="5" class="empty">Loading chain…</td></tr>
+            <tr><td colspan="7" class="empty">Loading chain…</td></tr>
           </tbody>
         </table>
       </div>
@@ -141,6 +152,16 @@
   </div>
 
   <div>
+    <div class="card">
+      <h2>Market Indicators</h2>
+      <div id="indicatorsBody"><div class="empty">Loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Suggested Setup</h2>
+      <div id="suggestionBody"><div class="empty">Loading…</div></div>
+    </div>
+
     <div class="card">
       <h2>Basket</h2>
       <div id="basketBody"><div class="empty">Add legs from the chain on the left.</div></div>
@@ -170,6 +191,7 @@ let chainData = [];       // raw tickers for chosen underlying (all expiries)
 let expiries = [];        // list of expiry keys "DDMMYY"
 let currentExpiry = null;
 let spot = null;
+let momentumData = null;   // {chg1h, chg4h, chg24h, sma, spotVsSma, high24h, low24h}
 let basket = [];          // {id, side, type, strike, symbol, lots, entryPremium, currentPremium, slPrice, tpPrice}
 let legIdSeq = 1;
 
@@ -223,32 +245,95 @@ function extractAsk(t){
   }
   return extractPremium(t); // fallback to mark if no live ask
 }
+function extractDelta(t){
+  if(t.greeks && t.greeks.delta!==undefined && t.greeks.delta!==null){
+    const v = parseFloat(t.greeks.delta);
+    if(!isNaN(v)) return v;
+  }
+  return null;
+}
+// ---- Black-Scholes pricing engine (uses Delta's own live IV per strike) ----
+function erf(x){
+  const sign = x<0?-1:1; x=Math.abs(x);
+  const a1=0.254829592,a2=-0.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=0.3275911;
+  const t=1/(1+p*x);
+  const y=1-(((((a5*t+a4)*t)+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
+  return sign*y;
+}
+function normCdf(x){ return 0.5*(1+erf(x/Math.sqrt(2))); }
+
+function blackScholes(type, S, K, T, sigma, r=0){
+  if(T<=0 || sigma<=0) return type==='call' ? Math.max(0,S-K) : Math.max(0,K-S);
+  const d1 = (Math.log(S/K) + (r + sigma*sigma/2)*T) / (sigma*Math.sqrt(T));
+  const d2 = d1 - sigma*Math.sqrt(T);
+  return type==='call'
+    ? S*normCdf(d1) - K*Math.exp(-r*T)*normCdf(d2)
+    : K*Math.exp(-r*T)*normCdf(-d2) - S*normCdf(-d1);
+}
+
+// Solve for the spot price implying a given option price (bisection — BS price is monotonic in S)
+function impliedSpotFromPrice(type, targetPrice, K, T, sigma, seedSpot){
+  const f = s => blackScholes(type, s, K, T, sigma) - targetPrice;
+  let lo = seedSpot*0.2, hi = seedSpot*5;
+  let flo = f(lo), fhi = f(hi), guard=0;
+  while(flo*fhi>0 && guard<60){ lo*=0.7; hi*=1.4; flo=f(lo); fhi=f(hi); guard++; }
+  if(flo*fhi>0) return null; // couldn't bracket a root
+  for(let i=0;i<80;i++){
+    const mid=(lo+hi)/2, fm=f(mid);
+    if(Math.abs(fm)<1e-6) return mid;
+    if(flo*fm<0){ hi=mid; fhi=fm; } else { lo=mid; flo=fm; }
+  }
+  return (lo+hi)/2;
+}
+
+function extractIV(t){
+  if(t.mark_vol!==undefined && t.mark_vol!==null){
+    const v = parseFloat(t.mark_vol);
+    if(!isNaN(v) && v>0) return v/100; // Delta reports IV in percent
+  }
+  return null;
+}
+
+function expiryTimestampMs(ddmmyy){
+  const dd=parseInt(ddmmyy.slice(0,2)), mm=parseInt(ddmmyy.slice(2,4))-1, yy=2000+parseInt(ddmmyy.slice(4,6));
+  // Delta's daily/weekly BTC & ETH options settle 17:30 IST = 12:00 UTC
+  return Date.UTC(yy, mm, dd, 12, 0, 0);
+}
+function timeToExpiryYears(){
+  if(!currentExpiry) return null;
+  const diffMs = expiryTimestampMs(currentExpiry) - Date.now();
+  return Math.max(diffMs, 0) / (365*24*3600*1000);
+}
+
 function extractSpot(t){
   const f = t.spot_price;
   if(f !== undefined && f !== null && !isNaN(parseFloat(f))) return parseFloat(f);
   return null;
 }
 
-async function fetchChain(underlying){
-  setStatus('fetching chain…', '');
-  const qs = `contract_types=call_options,put_options&underlying_asset_symbols=${underlying}`;
-  // 1) try Delta's API directly (works once this file is hosted on a real domain Delta allows,
-  //    or if Delta ever permits this origin)
+async function deltaGet(path, params){
+  const qs = new URLSearchParams(params).toString();
   try{
-    const res = await fetch(`${API}?${qs}`, {headers:{Accept:'application/json'}});
+    const res = await fetch(`https://api.india.delta.exchange/v2/${path}?${qs}`, {headers:{Accept:'application/json'}});
     if(res.ok){
-      const json = await res.json();
-      if(json.success) return json.result || [];
+      const j = await res.json();
+      if(j.success) return j.result;
     }
   }catch(e){ /* fall through to proxy */ }
 
-  // 2) fall back to a same-origin serverless proxy at /.netlify/functions/delta-proxy
-  //    (only exists once you deploy this file alongside the function below on Netlify)
-  const res2 = await fetch(`/.netlify/functions/delta-proxy?${qs}`, {headers:{Accept:'application/json'}});
-  if(!res2.ok) throw new Error('Direct call blocked by CORS, and no proxy found at /.netlify/functions/delta-proxy');
-  const json2 = await res2.json();
-  if(!json2.success) throw new Error('Proxy returned success:false');
-  return json2.result || [];
+  const res2 = await fetch(`/.netlify/functions/delta-proxy?_path=${encodeURIComponent(path)}&${qs}`, {headers:{Accept:'application/json'}});
+  if(!res2.ok) throw new Error(`Proxy call failed for ${path}`);
+  const j2 = await res2.json();
+  if(!j2.success) throw new Error(`Proxy returned success:false for ${path}`);
+  return j2.result;
+}
+
+async function fetchChain(underlying){
+  setStatus('fetching chain…', '');
+  return await deltaGet('tickers', {
+    contract_types: 'call_options,put_options,perpetual_futures',
+    underlying_asset_symbols: underlying
+  });
 }
 
 function rebuildExpiryList(){
@@ -281,15 +366,19 @@ function renderChain(){
 
   const strikes = Object.keys(byStrike).map(parseFloat).sort((a,b)=>a-b);
   if(strikes.length===0){
-    $('chainBody').innerHTML = '<tr><td colspan="5" class="empty">No strikes for this expiry.</td></tr>';
+    $('chainBody').innerHTML = '<tr><td colspan="7" class="empty">No strikes for this expiry.</td></tr>';
     return;
   }
   let html = '';
   strikes.forEach(strike=>{
-    const cePrem = byStrike[strike].ce ? extractPremium(byStrike[strike].ce) : null;
-    const peProm = byStrike[strike].pe ? extractPremium(byStrike[strike].pe) : null;
+    const ceT = byStrike[strike].ce, peT = byStrike[strike].pe;
+    const cePrem = ceT ? extractPremium(ceT) : null;
+    const peProm = peT ? extractPremium(peT) : null;
+    const ceOI = ceT ? extractOI(ceT) : null;
+    const peOI = peT ? extractOI(peT) : null;
     const isAtm = spot && Math.abs(strike-spot) === Math.min(...strikes.map(s=>Math.abs(s-spot)));
     html += `<tr class="${isAtm?'atm-row':''}">
+      <td class="mono" style="color:var(--dim);">${ceOI!==null?ceOI.toLocaleString():'—'}</td>
       <td class="strike-cell">${strike.toLocaleString()}</td>
       <td>${cePrem!==null? '$'+cePrem.toFixed(2):'—'}</td>
       <td>
@@ -305,9 +394,11 @@ function renderChain(){
           <button class="btn-sell" onclick="addLeg('sell','put',${strike})">Sell</button>
         </div>
       </td>
+      <td class="mono" style="color:var(--dim);">${peOI!==null?peOI.toLocaleString():'—'}</td>
     </tr>`;
   });
   $('chainBody').innerHTML = html;
+  renderSuggestion();
 }
 
 function slPtsOf(leg){
@@ -317,6 +408,241 @@ function slPtsOf(leg){
 function tpPtsOf(leg){
   if(leg.tpPrice===null || leg.tpPrice===undefined || leg.entryPremium===null) return null;
   return Math.abs(leg.tpPrice - leg.entryPremium);
+}
+
+// Full re-pricing: solve implied spot from the source leg's own live IV+strike,
+// then reprice the target leg at that spot using ITS OWN live IV+strike (respects
+// each strike's individual skew). This accounts for gamma and theta properly,
+// unlike a flat delta-only scaling.
+function computeLinkedPriceBS(sourceLeg, sourceTargetPrice, targetLeg){
+  const T = timeToExpiryYears();
+  if(T===null || T<=0 || !spot) return null;
+  if(sourceLeg.iv===null || sourceLeg.iv===undefined) return null;
+  if(targetLeg.iv===null || targetLeg.iv===undefined) return null;
+  const impliedSpot = impliedSpotFromPrice(sourceLeg.type, sourceTargetPrice, sourceLeg.strike, T, sourceLeg.iv, spot);
+  if(impliedSpot===null) return null;
+  return blackScholes(targetLeg.type, impliedSpot, targetLeg.strike, T, targetLeg.iv);
+}
+
+// Fallback for when IV isn't available: linear delta-only approximation.
+function computeLinkedPriceDeltaApprox(sourceLeg, sourceTargetPrice, targetLeg){
+  if(sourceLeg.delta===null || sourceLeg.delta===undefined || sourceLeg.delta===0) return null;
+  if(targetLeg.delta===null || targetLeg.delta===undefined) return null;
+  if(sourceLeg.entryPremium===null || targetLeg.entryPremium===null) return null;
+  const spotMove = (sourceTargetPrice - sourceLeg.entryPremium) / sourceLeg.delta;
+  return targetLeg.entryPremium + targetLeg.delta * spotMove;
+}
+
+function computeLinkedPrice(sourceLeg, sourceTargetPrice, targetLeg){
+  const bs = computeLinkedPriceBS(sourceLeg, sourceTargetPrice, targetLeg);
+  if(bs!==null && !isNaN(bs)) return bs;
+  return computeLinkedPriceDeltaApprox(sourceLeg, sourceTargetPrice, targetLeg);
+}
+
+function getLinkSuggestionsFor(leg){
+  const out = [];
+  basket.forEach(other=>{
+    if(other.id===leg.id) return;
+    if(other.slPrice!==null && other.slPrice!==undefined){
+      const bs = computeLinkedPriceBS(other, other.slPrice, leg);
+      const p = bs!==null ? bs : computeLinkedPriceDeltaApprox(other, other.slPrice, leg);
+      if(p!==null) out.push({
+        field:'tpPrice', label:'TP',
+        fromLabel:`${other.side.toUpperCase()} ${other.type==='call'?'CE':'PE'} ${other.strike} SL`,
+        value:p, method: bs!==null ? 'BS' : 'approx'
+      });
+    }
+    if(other.tpPrice!==null && other.tpPrice!==undefined){
+      const bs = computeLinkedPriceBS(other, other.tpPrice, leg);
+      const p = bs!==null ? bs : computeLinkedPriceDeltaApprox(other, other.tpPrice, leg);
+      if(p!==null) out.push({
+        field:'slPrice', label:'SL',
+        fromLabel:`${other.side.toUpperCase()} ${other.type==='call'?'CE':'PE'} ${other.strike} TP`,
+        value:p, method: bs!==null ? 'BS' : 'approx'
+      });
+    }
+  });
+  return out;
+}
+
+function applySuggestion(id, field, value){
+  const leg = basket.find(l=>l.id===id);
+  if(!leg) return;
+  leg[field] = value;
+  renderBasket();
+}
+
+async function loadMomentum(underlying){
+  try{
+    const nowSec = Math.floor(Date.now()/1000);
+    const startSec = nowSec - 5*3600; // last 5 hours of 15m candles
+    const candles = await deltaGet('history/candles', {
+      symbol: `${underlying}USD`,
+      resolution: '15m',
+      start: startSec,
+      end: nowSec
+    });
+    if(!Array.isArray(candles) || candles.length<2){ momentumData=null; return; }
+    // defensive: candle rows may be {time,open,high,low,close,volume} or similar keys
+    const closes = candles.map(c => parseFloat(c.close ?? c.c)).filter(v=>!isNaN(v));
+    const highs = candles.map(c => parseFloat(c.high ?? c.h)).filter(v=>!isNaN(v));
+    const lows = candles.map(c => parseFloat(c.low ?? c.l)).filter(v=>!isNaN(v));
+    if(closes.length<2){ momentumData=null; return; }
+    const latest = closes[closes.length-1];
+    const oneHourAgoIdx = Math.max(0, closes.length-1-4); // 4 x 15m = 1h
+    const fourHourAgoIdx = 0; // window itself is ~5h, use the start as ~4-5h ago
+    const sma = closes.reduce((a,b)=>a+b,0)/closes.length;
+    momentumData = {
+      chg1h: ((latest - closes[oneHourAgoIdx]) / closes[oneHourAgoIdx]) * 100,
+      chg4h: ((latest - closes[fourHourAgoIdx]) / closes[fourHourAgoIdx]) * 100,
+      sma,
+      spotVsSmaPct: ((latest - sma) / sma) * 100,
+      high: highs.length ? Math.max(...highs) : null,
+      low: lows.length ? Math.min(...lows) : null
+    };
+  }catch(e){
+    momentumData = null; // indicators panel will just show "unavailable" for this part
+  }
+}
+
+function extractOI(t){
+  const v = parseFloat(t.oi);
+  return isNaN(v) ? null : v;
+}
+
+function computeChainIndicators(){
+  const rows = chainData.filter(t => parseExpiryFromSymbol(t.symbol) === currentExpiry);
+  const calls = rows.filter(t=>t.contract_type==='call_options');
+  const puts = rows.filter(t=>t.contract_type==='put_options');
+  let callOI=0, putOI=0;
+  calls.forEach(t=>{ const oi=extractOI(t); if(oi!==null) callOI+=oi; });
+  puts.forEach(t=>{ const oi=extractOI(t); if(oi!==null) putOI+=oi; });
+  const pcr = callOI>0 ? putOI/callOI : null;
+
+  // ATM IV skew: nearest-to-spot call vs put IV
+  let atmCallIV=null, atmPutIV=null;
+  if(spot){
+    let bestCallDiff=Infinity, bestPutDiff=Infinity;
+    calls.forEach(t=>{
+      const k=parseFloat(t.strike_price), d=Math.abs(k-spot);
+      if(d<bestCallDiff){ bestCallDiff=d; atmCallIV=extractIV(t); }
+    });
+    puts.forEach(t=>{
+      const k=parseFloat(t.strike_price), d=Math.abs(k-spot);
+      if(d<bestPutDiff){ bestPutDiff=d; atmPutIV=extractIV(t); }
+    });
+  }
+  const ivSkew = (atmCallIV!==null && atmPutIV!==null) ? (atmPutIV-atmCallIV)*100 : null; // in vol points
+
+  return {pcr, atmCallIV, atmPutIV, ivSkew, callOI, putOI};
+}
+
+function renderIndicators(){
+  const el = $('indicatorsBody');
+  const ci = computeChainIndicators();
+  const rows = [];
+
+  if(momentumData){
+    rows.push(['1h change', (momentumData.chg1h>=0?'+':'')+momentumData.chg1h.toFixed(2)+'%', momentumData.chg1h>=0?'pos':'neg']);
+    rows.push(['4h change', (momentumData.chg4h>=0?'+':'')+momentumData.chg4h.toFixed(2)+'%', momentumData.chg4h>=0?'pos':'neg']);
+    rows.push(['Spot vs 5h average', (momentumData.spotVsSmaPct>=0?'+':'')+momentumData.spotVsSmaPct.toFixed(2)+'%', momentumData.spotVsSmaPct>=0?'pos':'neg']);
+    if(momentumData.high!==null && momentumData.low!==null){
+      rows.push(['Recent range (5h)', `$${momentumData.low.toLocaleString()} – $${momentumData.high.toLocaleString()}`, '']);
+    }
+  }
+  if(ci.pcr!==null){
+    rows.push(['Put/Call OI ratio', ci.pcr.toFixed(2)+(ci.pcr>1?' (more put OI)':ci.pcr<1?' (more call OI)':''), '']);
+  }
+  if(ci.ivSkew!==null){
+    const dir = ci.ivSkew>0 ? 'puts costlier (downside hedged more)' : ci.ivSkew<0 ? 'calls costlier (upside hedged more)' : 'flat';
+    rows.push(['ATM IV skew (put−call)', (ci.ivSkew>=0?'+':'')+ci.ivSkew.toFixed(2)+' vol pts — '+dir, '']);
+  }
+
+  if(rows.length===0){
+    el.innerHTML = '<div class="empty">Indicator data unavailable right now.</div>';
+    return;
+  }
+  el.innerHTML = `<div class="summary-grid">` + rows.map(([k,v,cls])=>
+    `<div class="stat"><div class="k">${k}</div><div class="v mono ${cls}" style="font-size:14px;">${v}</div></div>`
+  ).join('') + `</div>
+  <div style="font-size:11px; color:var(--dim); margin-top:8px;">Factual read of current data — not a forecast. Combine with your own judgement.</div>`;
+}
+
+function findPerpTicker(){
+  return chainData.find(t => t.contract_type==='perpetual_futures');
+}
+
+// Applies your stated rule: compare the farthest-listed OTM call premium vs the
+// farthest-listed OTM put premium. Whichever side is cheaper implies the market
+// is pricing a lower probability of moving that way — that's the side to sell.
+// This is a mechanical read of the current chain, not a prediction of where BTC goes next.
+function computeSuggestedSetup(){
+  const rows = chainData.filter(t => parseExpiryFromSymbol(t.symbol) === currentExpiry);
+  const ceStrikes = Array.from(new Set(rows.filter(t=>t.contract_type==='call_options').map(t=>parseFloat(t.strike_price)))).sort((a,b)=>a-b);
+  const peStrikes = Array.from(new Set(rows.filter(t=>t.contract_type==='put_options').map(t=>parseFloat(t.strike_price)))).sort((a,b)=>a-b);
+  if(ceStrikes.length<2 || peStrikes.length<2) return null;
+
+  const farCallStrike = ceStrikes[ceStrikes.length-1];
+  const nearCallStrike = ceStrikes[ceStrikes.length-2];
+  const farPutStrike = peStrikes[0];
+  const nearPutStrike = peStrikes[1];
+
+  const farCallT = findTicker('call', farCallStrike);
+  const farPutT = findTicker('put', farPutStrike);
+  const farCallPrem = farCallT ? extractPremium(farCallT) : null;
+  const farPutPrem = farPutT ? extractPremium(farPutT) : null;
+  if(farCallPrem===null || farPutPrem===null) return null;
+
+  const side = farCallPrem <= farPutPrem ? 'call' : 'put';
+  const buyStrike = side==='call' ? farCallStrike : farPutStrike;
+  const sellStrike = side==='call' ? nearCallStrike : nearPutStrike;
+  const buyT = findTicker(side, buyStrike);
+  const sellT = findTicker(side, sellStrike);
+  const buyPremium = buyT ? extractAsk(buyT) : null;
+  const sellPremium = sellT ? extractBid(sellT) : null;
+
+  return {side, buyStrike, sellStrike, buyPremium, sellPremium, farCallPrem, farPutPrem};
+}
+
+function addSuggestedSpread(){
+  const s = computeSuggestedSetup();
+  if(!s) return;
+  addLeg('sell', s.side, s.sellStrike);
+  addLeg('buy', s.side, s.buyStrike);
+}
+
+function renderSuggestion(){
+  const el = $('suggestionBody');
+  const setup = computeSuggestedSetup();
+  const perp = findPerpTicker();
+  let momentumHtml = '';
+  if(perp){
+    const chg = parseFloat(perp.ltp_change_24h);
+    if(!isNaN(chg)){
+      const cls = chg>=0 ? 'pos' : 'neg';
+      momentumHtml = `<div class="stat"><div class="k">BTC 24h change (info only)</div><div class="v mono ${cls}">${chg>=0?'+':''}${chg.toFixed(2)}%</div></div>`;
+    }
+  }
+  if(!setup){
+    el.innerHTML = '<div class="empty">Not enough strikes loaded yet for this expiry.</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div class="summary-grid" style="margin-bottom:10px;">
+      <div class="stat"><div class="k">Farthest OTM Call (${setup.side==='call'?'cheaper → sell side':'—'})</div><div class="v mono">$${setup.farCallPrem.toFixed(2)}</div></div>
+      <div class="stat"><div class="k">Farthest OTM Put (${setup.side==='put'?'cheaper → sell side':'—'})</div><div class="v mono">$${setup.farPutPrem.toFixed(2)}</div></div>
+      ${momentumHtml}
+    </div>
+    <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:12px;">
+      <div style="font-size:12px; color:var(--dim); margin-bottom:6px;">Suggested (per your rule — cheaper far-OTM side = sell side):</div>
+      <div class="mono" style="font-size:14px; margin-bottom:8px;">
+        <span class="badge sell" style="margin-right:6px;">SELL</span> ${setup.side==='call'?'CE':'PE'} ${setup.sellStrike} @ ~$${setup.sellPremium!==null?setup.sellPremium.toFixed(2):'—'}<br>
+        <span class="badge buy" style="margin:6px 6px 0 0; display:inline-block;">BUY</span> ${setup.side==='call'?'CE':'PE'} ${setup.buyStrike} @ ~$${setup.buyPremium!==null?setup.buyPremium.toFixed(2):'—'}
+      </div>
+      <button class="btn-refresh" onclick="addSuggestedSpread()">+ Add this spread to basket</button>
+    </div>
+    <div style="font-size:11px; color:var(--dim); margin-top:8px;">This is a mechanical read of your own rule on the current chain — not a market prediction. BTC can move either way regardless of which side is cheaper.</div>
+  `;
 }
 
 function findTicker(type, strike){
@@ -330,12 +656,16 @@ function findTicker(type, strike){
 function addLeg(side, type, strike){
   const t = findTicker(type, strike);
   const prem = t ? (side==='buy' ? extractAsk(t) : extractBid(t)) : null;
+  const delta = t ? extractDelta(t) : null;
+  const iv = t ? extractIV(t) : null;
   basket.push({
     id: legIdSeq++,
     side, type, strike,
     lots: 1,
     entryPremium: prem,
     currentPremium: prem,
+    delta: delta,
+    iv: iv,
     slPrice: null,
     tpPrice: null
   });
@@ -361,6 +691,10 @@ function refreshLegPremiums(){
       // to exit: a long (buy) position sells at bid; a short (sell) position buys back at ask
       const p = leg.side==='buy' ? extractBid(t) : extractAsk(t);
       if(p!==null && p!==undefined && !isNaN(p)) leg.currentPremium = p;
+      const d = extractDelta(t);
+      if(d!==null && !isNaN(d)) leg.delta = d;
+      const iv = extractIV(t);
+      if(iv!==null && !isNaN(iv)) leg.iv = iv;
     }
   });
 }
@@ -389,6 +723,12 @@ function renderBasket(){
   basket.forEach(leg=>{
     const trig = legTriggerStatus(leg);
     const pnlPerLot = leg.side==='sell' ? (leg.entryPremium-leg.currentPremium) : (leg.currentPremium-leg.entryPremium);
+    const suggestions = getLinkSuggestionsFor(leg);
+    const suggestionsHtml = suggestions.map(s=>
+      `<div class="link-suggestion">↳ Based on ${s.fromLabel} → suggested ${s.label}: $${s.value.toFixed(2)} <span style="opacity:.6">(${s.method==='BS'?'Black-Scholes':'approx'})</span>
+        <button onclick="applySuggestion(${leg.id},'${s.field}',${s.value})">Use</button>
+      </div>`
+    ).join('');
     html += `<div class="basket-row">
       <div class="row-top">
         <div>
@@ -404,10 +744,12 @@ function renderBasket(){
         <div><label>TP exit price</label><input type="number" step="0.01" placeholder="off" value="${leg.tpPrice??''}" onchange="updateLegField(${leg.id},'tpPrice',this.value)"></div>
       </div>
       <div class="trigger-note ${trig.sl||trig.tp ? 'hit':'ok'}">
-        Live premium: $${leg.currentPremium!==null?leg.currentPremium.toFixed(2):'—'} ·
+        Live premium: $${leg.currentPremium!==null?leg.currentPremium.toFixed(2):'—'}
+        ${leg.iv!==null?' · IV: '+(leg.iv*100).toFixed(1)+'%':''} ·
         P&amp;L/lot: ${fmtMoney(pnlPerLot)} ·
         ${trig.sl ? 'SL TRIGGERED' : trig.tp ? 'TP TRIGGERED' : 'within range'}
       </div>
+      ${suggestionsHtml}
     </div>`;
   });
   el.innerHTML = html;
@@ -574,10 +916,12 @@ async function loadChain(){
     rebuildExpiryList();
     renderChain();
     renderBasket();
+    await loadMomentum(underlying);
+    renderIndicators();
     setStatus('live · updated '+new Date().toLocaleTimeString(), 'live');
   }catch(e){
     setStatus('fetch failed: '+e.message+' (Delta API may be blocking browser CORS — see note below)', 'err');
-    $('chainBody').innerHTML = '<tr><td colspan="5" class="empty">Could not load live chain. If this persists, Delta\'s API is likely rejecting direct browser requests (CORS) — it would need a small serverless proxy (e.g. a Netlify function) to relay the request.</td></tr>';
+    $('chainBody').innerHTML = '<tr><td colspan="7" class="empty">Could not load live chain. If this persists, Delta\'s API is likely rejecting direct browser requests (CORS) — it would need a small serverless proxy (e.g. a Netlify function) to relay the request.</td></tr>';
   }
 }
 
