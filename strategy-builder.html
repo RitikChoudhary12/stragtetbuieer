@@ -158,11 +158,6 @@
     </div>
 
     <div class="card">
-      <h2>Suggested Setup</h2>
-      <div id="suggestionBody"><div class="empty">Loading…</div></div>
-    </div>
-
-    <div class="card">
       <h2>Basket</h2>
       <div id="basketBody"><div class="empty">Add legs from the chain on the left.</div></div>
     </div>
@@ -398,7 +393,6 @@ function renderChain(){
     </tr>`;
   });
   $('chainBody').innerHTML = html;
-  renderSuggestion();
 }
 
 function slPtsOf(leg){
@@ -566,83 +560,6 @@ function renderIndicators(){
     `<div class="stat"><div class="k">${k}</div><div class="v mono ${cls}" style="font-size:14px;">${v}</div></div>`
   ).join('') + `</div>
   <div style="font-size:11px; color:var(--dim); margin-top:8px;">Factual read of current data — not a forecast. Combine with your own judgement.</div>`;
-}
-
-function findPerpTicker(){
-  return chainData.find(t => t.contract_type==='perpetual_futures');
-}
-
-// Applies your stated rule: compare the farthest-listed OTM call premium vs the
-// farthest-listed OTM put premium. Whichever side is cheaper implies the market
-// is pricing a lower probability of moving that way — that's the side to sell.
-// This is a mechanical read of the current chain, not a prediction of where BTC goes next.
-function computeSuggestedSetup(){
-  const rows = chainData.filter(t => parseExpiryFromSymbol(t.symbol) === currentExpiry);
-  const ceStrikes = Array.from(new Set(rows.filter(t=>t.contract_type==='call_options').map(t=>parseFloat(t.strike_price)))).sort((a,b)=>a-b);
-  const peStrikes = Array.from(new Set(rows.filter(t=>t.contract_type==='put_options').map(t=>parseFloat(t.strike_price)))).sort((a,b)=>a-b);
-  if(ceStrikes.length<2 || peStrikes.length<2) return null;
-
-  const farCallStrike = ceStrikes[ceStrikes.length-1];
-  const nearCallStrike = ceStrikes[ceStrikes.length-2];
-  const farPutStrike = peStrikes[0];
-  const nearPutStrike = peStrikes[1];
-
-  const farCallT = findTicker('call', farCallStrike);
-  const farPutT = findTicker('put', farPutStrike);
-  const farCallPrem = farCallT ? extractPremium(farCallT) : null;
-  const farPutPrem = farPutT ? extractPremium(farPutT) : null;
-  if(farCallPrem===null || farPutPrem===null) return null;
-
-  const side = farCallPrem <= farPutPrem ? 'call' : 'put';
-  const buyStrike = side==='call' ? farCallStrike : farPutStrike;
-  const sellStrike = side==='call' ? nearCallStrike : nearPutStrike;
-  const buyT = findTicker(side, buyStrike);
-  const sellT = findTicker(side, sellStrike);
-  const buyPremium = buyT ? extractAsk(buyT) : null;
-  const sellPremium = sellT ? extractBid(sellT) : null;
-
-  return {side, buyStrike, sellStrike, buyPremium, sellPremium, farCallPrem, farPutPrem};
-}
-
-function addSuggestedSpread(){
-  const s = computeSuggestedSetup();
-  if(!s) return;
-  addLeg('sell', s.side, s.sellStrike);
-  addLeg('buy', s.side, s.buyStrike);
-}
-
-function renderSuggestion(){
-  const el = $('suggestionBody');
-  const setup = computeSuggestedSetup();
-  const perp = findPerpTicker();
-  let momentumHtml = '';
-  if(perp){
-    const chg = parseFloat(perp.ltp_change_24h);
-    if(!isNaN(chg)){
-      const cls = chg>=0 ? 'pos' : 'neg';
-      momentumHtml = `<div class="stat"><div class="k">BTC 24h change (info only)</div><div class="v mono ${cls}">${chg>=0?'+':''}${chg.toFixed(2)}%</div></div>`;
-    }
-  }
-  if(!setup){
-    el.innerHTML = '<div class="empty">Not enough strikes loaded yet for this expiry.</div>';
-    return;
-  }
-  el.innerHTML = `
-    <div class="summary-grid" style="margin-bottom:10px;">
-      <div class="stat"><div class="k">Farthest OTM Call (${setup.side==='call'?'cheaper → sell side':'—'})</div><div class="v mono">$${setup.farCallPrem.toFixed(2)}</div></div>
-      <div class="stat"><div class="k">Farthest OTM Put (${setup.side==='put'?'cheaper → sell side':'—'})</div><div class="v mono">$${setup.farPutPrem.toFixed(2)}</div></div>
-      ${momentumHtml}
-    </div>
-    <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:12px;">
-      <div style="font-size:12px; color:var(--dim); margin-bottom:6px;">Suggested (per your rule — cheaper far-OTM side = sell side):</div>
-      <div class="mono" style="font-size:14px; margin-bottom:8px;">
-        <span class="badge sell" style="margin-right:6px;">SELL</span> ${setup.side==='call'?'CE':'PE'} ${setup.sellStrike} @ ~$${setup.sellPremium!==null?setup.sellPremium.toFixed(2):'—'}<br>
-        <span class="badge buy" style="margin:6px 6px 0 0; display:inline-block;">BUY</span> ${setup.side==='call'?'CE':'PE'} ${setup.buyStrike} @ ~$${setup.buyPremium!==null?setup.buyPremium.toFixed(2):'—'}
-      </div>
-      <button class="btn-refresh" onclick="addSuggestedSpread()">+ Add this spread to basket</button>
-    </div>
-    <div style="font-size:11px; color:var(--dim); margin-top:8px;">This is a mechanical read of your own rule on the current chain — not a market prediction. BTC can move either way regardless of which side is cheaper.</div>
-  `;
 }
 
 function findTicker(type, strike){
